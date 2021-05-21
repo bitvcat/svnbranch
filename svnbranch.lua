@@ -80,7 +80,6 @@ local crPrint = function(str) print(_cformat(str, "red")) end
 local cgPrint = function(str) print(_cformat(str, "green")) end
 
 ----------------------------------- trunk2branch -----------------------------------
-require("xprint")
 -- 仓库 url
 local _url_proj = "svn://192.168.1.254/proj-slg"
 local _url_trunk = _url_proj .. "/trunk"
