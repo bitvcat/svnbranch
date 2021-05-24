@@ -79,6 +79,7 @@ end
 local crPrint = function(str) print(_cformat(str, "red")) end
 local cgPrint = function(str) print(_cformat(str, "green")) end
 
+
 ----------------------------------- trunk2branch -----------------------------------
 -- 仓库 url
 local _url_proj = "svn://192.168.1.254/proj-slg"
@@ -115,34 +116,7 @@ local function _shell(cmd, quite)
     end
 end
 
-local function _judge_start()
-    crPrint("\n\n接下来的操作可能很危险,一切后果自负! 如果你不想继续请直接关闭窗口! \n\n")
-    print("是否继续？[yes/no]")
-    local r = io.read("l")
-    if r ~= "yes" then
-        crPrint("Error: 口令错误，操作结束！")
-        return false
-    end
-    return true
-end
-
--- 平台
-local function _judge_plat()
-    print("\n请输入平台:")
-    local platform = io.read() --arg[2]
-    if not platform or string.len(platform)==0 then
-        crPrint('Error: 请输入平台' )
-        return
-    end
-    if string.find(platform, " ") then
-        crPrint("Error: 平台名称不能有空格")
-        return
-    end
-
-    return platform
-end
-
-local function repo_info(url, echo)
+local function _repo_info(url, echo)
     print()
     print("测试仓库：" .. _cformat(url, "green"))
 
@@ -159,39 +133,6 @@ local function repo_info(url, echo)
     else
         crPrint("获取仓库信息失败")
     end
-end
-
--- 从svn info 中截取 revision
-local function get_revision(info)
-    local revision = string.match(info, "Revision:%s*(%d+)")
-    assert(revision)
-    return tonumber(revision)
-end
-
--- 版本号
-local function _judge_revision()
-    local crevision
-    local info = repo_info(_url_trunk)
-    if info then
-        crevision = get_revision(info)
-        print("主干版本：" .. _cformat(crevision, "green"))
-    else
-        crPrint("Error: 主干仓库不存在")
-        return false
-    end
-
-    print("\n请输入svn版本号(若不输入则表示取主干最新的版本号):")
-    local revision = io.read()
-    if not revision or string.len(revision) == 0 then
-        -- 读取主干 revision
-        revision = crevision
-    else
-        revision = assert(tonumber(revision))
-        if revision > crevision then
-            crPrint("Error: 输入的svn版本号不能比主干当前的版本号大")
-        end
-    end
-    return revision
 end
 
 local function _checkout_empty_path(url)
@@ -294,42 +235,120 @@ local function _extract_branch(url, plat)
     return branchs
 end
 
-function try_branch2tag(burl, plat, date, revision)
+local function _branch2tag(burl, last)
+    -- 备份
+    local tagurl = string.format("%s/%s_%s_%s", _url_branch, last[1], last[2], last[3])
+    print("备份分支：" .. _cformat(tagurl, "green"))
+
+    local movecmd = string.format('svn move %s %s -m"move %s to %s"', burl, tagurl, burl, tagurl)
+    local ok, msg  = _shell(movecmd)
+    if ok then
+        print("备份分支：" .. _cformat("成功", "green"))
+    else
+        print("备份分支：" .. _cformat("失败", "red"))
+        print(msg)
+    end
+    return ok
+end
+
+local function _trunk2branch(burl, plat, date, revision)
+    -- svn copy trunk branch --revision xxx -m "xxxx" --quiet
+    local version = date .. "_" .. revision
+    print("切换分支：" .. _cformat(plat.."_"..version, "green"))
+    local copycmd = string.format('svn copy %s %s --revision %s -m "trunk2branch：%s"', _url_trunk, burl, revision, version)
+    local ok, err = _shell(copycmd)
+    if ok then
+        print("切换分支：" .. _cformat("成功", "green"))
+        return version
+    else
+        print("切换分支：" .. _cformat("失败", "green"))
+        print(err)
+    end
+end
+
+-- 确认检查
+local function _judge_start()
+    crPrint("\n\n接下来的操作可能很危险,一切后果自负! 如果你不想继续请直接关闭窗口! \n\n")
+    print("是否继续？[yes/no]")
+    local r = io.read("l")
+    if r ~= "yes" then
+        crPrint("Error: 口令错误，操作结束！")
+        return false
+    end
+    return true
+end
+
+-- 平台检查
+local function _judge_plat()
+    print("\n请输入平台:")
+    local platform = io.read() --arg[2]
+    if not platform or string.len(platform)==0 then
+        crPrint('Error: 请输入平台' )
+        return
+    end
+    if string.find(platform, " ") then
+        crPrint("Error: 平台名称不能有空格")
+        return
+    end
+
+    return platform
+end
+
+-- 版本号检查
+local function _judge_revision()
+    local crevision
+    local info = _repo_info(_url_trunk)
+    if info then
+        local rev = string.match(info, "Last Changed Rev:%s*(%d+)")
+        crevision = assert(tonumber(rev))
+        print("主干版本：" .. _cformat(crevision, "green"))
+    else
+        crPrint("Error: 主干仓库不存在")
+        return false
+    end
+
+    print("\n请输入svn版本号(若不输入则表示取主干最新的版本号):")
+    local revision = io.read()
+    if not revision or string.len(revision) == 0 then
+        -- 读取主干 revision
+        revision = crevision
+    else
+        revision = assert(tonumber(revision))
+        if revision > crevision then
+            crPrint("Error: 输入的svn版本号不能比主干当前的版本号大")
+            return false
+        end
+    end
+    return revision
+end
+
+-- 分支检查
+local function _judge_branch(plat, date, revision)
+    local last
     local branchs = _extract_branch(_url_branch, plat)
     if #branchs > 0 then
-        local last
         for _, v in ipairs(branchs) do
             if v[1] == plat then
                 last = v
             end
 
             if date == v[2] and revision == v[3] then
-                crPrint("Error：该分支已经存在，version：" .. v[1])
+                crPrint("Error：该分支已经存在，branch：" .. v[1])
                 return
             end
         end
 
-        if last then
-            -- 备份
-            if date >= last[2] and revision > last[3] then
-                local tagurl = string.format("%s/%s_%s_%s", _url_branch, plat, last[2], last[3])
-                print("备份分支：" .. _cformat(tagurl, "green"))
-
-                local movecmd = string.format('svn move %s %s -m"move %s to %s"', burl, tagurl, burl, tagurl)
-                local ok, msg  = _shell(movecmd)
-                if not ok then
-                    print("备份分支：" .. _cformat("失败", "red"))
-                else
-                    print("备份分支：" .. _cformat("成功", "green"))
-                end
-            else
-                crPrint("Error: 新的分支版本不能小于最后一个分支的版本")
-                return
-            end
+        print(table.unpack(last), date, revision)
+        if last and not (date >= last[2] and revision > last[3]) then
+            crPrint("Error: 新的分支版本不能小于最后一个分支的版本")
+            return
         end
     end
+    return true, last
 end
 
+
+----------------------------------- do_xxx -----------------------------------
 function do_trunk2branch()
     if not _judge_start() then return end
 
@@ -342,22 +361,16 @@ function do_trunk2branch()
     local date = tonumber(os.date("%Y%m%d"))
     print("\n当前日期：" .. _cformat(date, "green"))
 
-    local burl = _url_branch .. "/" .. plat
-    try_branch2tag(burl, plat, date, revision)
-
-    -- svn copy trunk branch --revision xxx -m "xxxx" --quiet
-    local version = date .. "_" .. revision
-    print("切换分支：" .. _cformat(plat.."_"..version, "green"))
-    local copycmd = string.format('svn copy %s %s --revision %s -m "trunk2branch：%s"', _url_trunk, burl, revision, version)
-    local ok, err = _shell(copycmd)
+    local ok, lb = _judge_branch(plat, date, revision)
     if ok then
-        print("切换分支：" .. _cformat("成功", "green"))
-    else
-        print("切换分支：" .. _cformat("失败", "green"))
-        print(err)
+        local burl = _url_branch .. "/" .. plat
+        if not lb or _branch2tag(burl, lb) then
+            local version = _trunk2branch(burl, plat, date, revision)
+            if version then
+                _set_version(burl, version)
+            end
+        end
     end
-
-    _set_version(burl, version)
 end
 
 function do_clean()
@@ -365,6 +378,9 @@ function do_clean()
     _remove_tmp()
 end
 
+function do_update_auth()
+    -- TODO
+end
 
 do_clean()
 do_trunk2branch()
