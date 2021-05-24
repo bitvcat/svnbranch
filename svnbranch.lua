@@ -80,12 +80,17 @@ local crPrint = function(str) print(_cformat(str, "red")) end
 local cgPrint = function(str) print(_cformat(str, "green")) end
 
 
------------------------------------ trunk2branch -----------------------------------
+----------------------------------- variable -----------------------------------
 -- 仓库 url
-local _url_proj = "svn://192.168.1.254/proj-slg"
+local _svn_ip = "192.168.1.254"
+local _url_proj = "svn://".. _svn_ip .. "/proj-slg"
 local _url_trunk = _url_proj .. "/trunk"
 local _url_branch = _url_proj .. "/branch"
+local _svn_path = "/var/svn/repos/proj-slg"
+local _repo_name = "proj-slg"
 
+
+----------------------------------- trunk2branch -----------------------------------
 local function _remove_tmp()
     os.execute("rm -rf __tmp &> /dev/null")
 end
@@ -218,7 +223,7 @@ local function _extract_branch(url, plat)
             assert(tostring(rv) == sv)
             table.insert(branchs, {bname, dt, rv})
         end
-	end
+    end
     fd:close()
 
     -- sort
@@ -275,6 +280,15 @@ local function _judge_start()
         crPrint("Error: 口令错误，操作结束！")
         return false
     end
+
+    local fd = io.popen("hostname -I")
+    assert(fd)
+    local ipstr = string.gsub(fd:read("a"), "%s", "")
+    if ipstr ~= _svn_ip then
+        crPrint("Error: 必须在 svn 服务器上执行该脚本(需要更新 svn 权限文件)")
+        return false
+    end
+
     return true
 end
 
@@ -333,18 +347,60 @@ local function _judge_branch(plat, date, revision)
             end
 
             if date == v[2] and revision == v[3] then
-                crPrint("Error：该分支已经存在，branch：" .. v[1])
+                crPrint(string.format("Error：该分支已经存在，plat=%s, date=%s, revision=%s", table.unpack(v)))
                 return
             end
         end
 
-        print(table.unpack(last), date, revision)
+        --print(table.unpack(last), date, revision)
         if last and not (date >= last[2] and revision > last[3]) then
             crPrint("Error: 新的分支版本不能小于最后一个分支的版本")
             return
         end
     end
     return true, last
+end
+
+
+----------------------------------- auth -----------------------------------
+local function _load_authz()
+    local file = io.open(_svn_path.."/conf/authz", "r")
+    assert(file)
+
+    local trunkFolder --子文件夹
+    local headers = {} --分支之前的行
+    local trunkAuth = {}
+    for ln in file:lines() do
+        if string.len(ln) > 0 and not string.match(ln, "^%s*#") then
+            -- 忽略空行、注释行
+            local node = string.match(ln, "^%[(.+)%]$") -- 匹配 [proj-name:/xxx/yyy]
+            if node then
+                local repoNm,folder1,folder2 = string.match(node, "(%S+):/(%S-)/(.*)")
+                if repoNm then
+                    assert(repoNm == _repo_name, ln)
+                    if folder1=="trunk" then
+                        assert(not string.find(folder2, "/"))
+                        trunkFolder = folder2
+                        trunkAuth[trunkFolder] = trunkAuth[trunkFolder] or {}
+                    else
+                        trunkFolder = nil
+                        if next(trunkAuth) then break end -- 只读到主干即可
+                    end
+                end
+            else
+                if trunkFolder then
+                    table.insert(trunkAuth[trunkFolder], ln)
+                end
+            end
+            table.insert(headers, ln)
+        else
+            if not next(trunkAuth) then
+                table.insert(headers, ln)
+            end
+        end
+    end
+    file:close()
+    return headers, trunkAuth
 end
 
 
@@ -368,6 +424,9 @@ function do_trunk2branch()
             local version = _trunk2branch(burl, plat, date, revision)
             if version then
                 _set_version(burl, version)
+
+                -- auth
+                do_update_auth(plat, version)
             end
         end
     end
@@ -378,8 +437,45 @@ function do_clean()
     _remove_tmp()
 end
 
-function do_update_auth()
-    -- TODO
+function do_update_auth(plat, version)
+    local contents, trunkAuth = _load_authz()
+
+    local fd = io.popen("svn list " .. _url_branch)
+    assert(fd)
+
+    local bnames = {}
+    for line in fd:lines() do
+        local bname = string.match(line, "(%S+)/")
+        if bname then
+            table.insert(bnames, bname)
+        end
+    end
+    fd:close()
+    table.sort(bnames)
+
+    local authz = _svn_path.."/conf/authz"
+    local cpcmd = string.format([[\cp -f %s %s.%s_%s]], authz, authz, plat, version)
+    assert(os.execute(cpcmd), cpcmd)
+    print("\n备份权限：" .. _cformat("成功", "green"))
+
+    for _, bnm in ipairs(bnames) do
+        table.insert(contents, string.format("\n#----------- %s ----------", bnm))
+
+        for k, t in pairs(trunkAuth) do
+            table.insert(contents, string.format("[%s:/branch/%s/%s]", _repo_name, bnm, k))
+            for _, v in ipairs(t) do
+                table.insert(contents, v)
+            end
+            table.insert(contents, "")
+        end
+    end
+
+    fd = io.open(authz, "w+")
+    assert(fd)
+    fd:write(table.concat(contents, "\n"))
+    fd:flush()
+    fd:close()
+    print("更新权限：" .. _cformat("成功", "green"))
 end
 
 do_clean()
